@@ -168,7 +168,8 @@ namespace DataScriptWriter
                             v = String.Format("'{0:yyyyMMdd}'", row[col]);
                             break;
                         case "time":
-                            v = String.Format("'{0:HH:mm:ss.fff}'", row[col]);
+                            //v = String.Format("'{0:HH:mm:ss.fff}'", row[col]);
+                            v = "'" + row[col].ToString() + "'";
                             break;
                         case "tinyint":
                         case "int":
