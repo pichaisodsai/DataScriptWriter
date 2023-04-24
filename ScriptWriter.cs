@@ -303,10 +303,10 @@ namespace DataScriptWriter
                         case "MERGE":
                         case "MERGE_without_DELETE":
                         case "MERGE_NEW_ONLY":
-                            ScriptTableMerge(so, colInfoTable, mainTable, w, colList, scolList, PKcolListOn, colCastList, fileIndex);
+                            ScriptTableMerge(so, colInfoTable, mainTable, w, colList, scolList, PKcolListOn, colCastList, fileIndex, totalFiles);
                             break;
                         case "INSERT":
-                            ScriptTableInitialInsert(so, colInfoTable, mainTable, w, colList, scolList, PKcolListOn, fileIndex);
+                            ScriptTableInitialInsert(so, colInfoTable, mainTable, w, colList, scolList, PKcolListOn, fileIndex, totalFiles);
                             break;
                         default:
                             throw new Exception("Unknown method: " + so.Method);
@@ -327,23 +327,27 @@ namespace DataScriptWriter
             Console.WriteLine(so.FullQuoted + " was scripted.");
         }
 
-        private void ScriptTableMerge(ScriptObject so, DataTable colInfoTable, DataTable mainTable, System.IO.StreamWriter w, string colList, string scolList, string PKcolListOn, string colCastList, int fileIndex)
+        private void ScriptTableMerge(ScriptObject so, DataTable colInfoTable, DataTable mainTable, System.IO.StreamWriter w, string colList, string scolList, string PKcolListOn, string colCastList, int fileIndex, int totalFiles)
         {
             string tmpTableName = so.TempCounterpart;
             bool useIdentity = hasIdentity(colInfoTable);
 
-            w.WriteLine(String.Format("IF OBJECT_ID('tempdb.dbo.{0}') IS NOT NULL DROP TABLE {0};", tmpTableName));
-            w.WriteLine(String.Format("SELECT {2} INTO {1} FROM {0} WHERE 0=1;", so.FullQuoted, tmpTableName, colList));
-            w.WriteLine(_BatchSeparator);
-
-            if (useIdentity)
+            // Only for the first file
+            if (fileIndex == 0)
             {
-                w.WriteLine(String.Format("SET IDENTITY_INSERT {0} ON;", tmpTableName));
+                w.WriteLine(String.Format("IF OBJECT_ID('tempdb.dbo.{0}') IS NOT NULL DROP TABLE {0};", tmpTableName));
+                w.WriteLine(String.Format("SELECT {2} INTO {1} FROM {0} WHERE 0=1;", so.FullQuoted, tmpTableName, colList));
                 w.WriteLine(_BatchSeparator);
+
+                if (useIdentity)
+                {
+                    w.WriteLine(String.Format("SET IDENTITY_INSERT {0} ON;", tmpTableName));
+                    w.WriteLine(_BatchSeparator);
+                }
             }
 
-            string rowsep = "\t  ";
 
+            string rowsep = "\t  ";
             // Update the rowIndex variable initialization
             int rowIndex = fileIndex * MaxRowsPerFile;
 
@@ -376,56 +380,60 @@ namespace DataScriptWriter
                 }
             }
 
-
-            //Identity
-            if (useIdentity)
+            // Only for the last file
+            if (fileIndex + 1 == totalFiles)
             {
-                w.WriteLine(String.Format("SET IDENTITY_INSERT {0} OFF;", tmpTableName));
+
+                //Identity
+                if (useIdentity)
+                {
+                    w.WriteLine(String.Format("SET IDENTITY_INSERT {0} OFF;", tmpTableName));
+                    w.WriteLine(_BatchSeparator);
+                    w.WriteLine(String.Format("SET IDENTITY_INSERT {0} ON;", so.FullQuoted));
+                    w.WriteLine(_BatchSeparator);
+                }
+
+                //Begin Merge
+                w.WriteLine("");
+                w.WriteLine(String.Format("WITH cte_data as (SELECT {1} FROM [{0}])", tmpTableName, colCastList));
+                w.WriteLine(String.Format("MERGE {0} as t", so.FullQuoted));
+                w.WriteLine("USING cte_data as s");
+                w.WriteLine(String.Format("\tON {0}", PKcolListOn.Replace(",", " AND")));
+                w.WriteLine("WHEN NOT MATCHED BY target THEN");
+                w.WriteLine(String.Format("\tINSERT ({0})", colList));
+                w.WriteLine(String.Format("\tVALUES ({0})", scolList));
+
+                //Merge: WHEN MATCHED
+                if (so.Method != "MERGE_NEW_ONLY")
+                {
+                    string UpdateColList = GetColList(colInfoTable, "constraint_type IS NULL", "{0} = s.{0}");
+                    w.WriteLine("WHEN MATCHED THEN ");
+                    w.WriteLine("\tUPDATE SET ");
+                    w.WriteLine(String.Format("\t{0}", UpdateColList));
+                }
+
+                //Merge: WHEN NOT MATCHED
+                if (so.Method == "MERGE")
+                {
+                    w.WriteLine("WHEN NOT MATCHED BY source THEN");
+                    w.WriteLine("\tDELETE");
+                }
+
+                w.WriteLine(";");
                 w.WriteLine(_BatchSeparator);
-                w.WriteLine(String.Format("SET IDENTITY_INSERT {0} ON;", so.FullQuoted));
+
+                //End
+                if (useIdentity)
+                {
+                    w.WriteLine(String.Format("SET IDENTITY_INSERT {0} OFF;", so.FullQuoted));
+                    w.WriteLine(_BatchSeparator);
+                }
+                w.WriteLine(String.Format("DROP TABLE {0};", tmpTableName));
                 w.WriteLine(_BatchSeparator);
             }
-
-            //Begin Merge
-            w.WriteLine("");
-            w.WriteLine(String.Format("WITH cte_data as (SELECT {1} FROM [{0}])", tmpTableName, colCastList));
-            w.WriteLine(String.Format("MERGE {0} as t", so.FullQuoted));
-            w.WriteLine("USING cte_data as s");
-            w.WriteLine(String.Format("\tON {0}", PKcolListOn.Replace(",", " AND")));
-            w.WriteLine("WHEN NOT MATCHED BY target THEN");
-            w.WriteLine(String.Format("\tINSERT ({0})", colList));
-            w.WriteLine(String.Format("\tVALUES ({0})", scolList));
-
-            //Merge: WHEN MATCHED
-            if (so.Method != "MERGE_NEW_ONLY")
-            {
-                string UpdateColList = GetColList(colInfoTable, "constraint_type IS NULL", "{0} = s.{0}");
-                w.WriteLine("WHEN MATCHED THEN ");
-                w.WriteLine("\tUPDATE SET ");
-                w.WriteLine(String.Format("\t{0}", UpdateColList));
-            }
-
-            //Merge: WHEN NOT MATCHED
-            if (so.Method == "MERGE")
-            {
-                w.WriteLine("WHEN NOT MATCHED BY source THEN");
-                w.WriteLine("\tDELETE");
-            }
-
-            w.WriteLine(";");
-            w.WriteLine(_BatchSeparator);
-
-            //End
-            if (useIdentity)
-            {
-                w.WriteLine(String.Format("SET IDENTITY_INSERT {0} OFF;", so.FullQuoted));
-                w.WriteLine(_BatchSeparator);
-            }
-            w.WriteLine(String.Format("DROP TABLE {0};", tmpTableName));
-            w.WriteLine(_BatchSeparator);
         }
 
-        private void ScriptTableInitialInsert(ScriptObject so, DataTable colInfoTable, DataTable mainTable, System.IO.StreamWriter w, string colList, string scolList, string PKcolListOn, int fileIndex)
+        private void ScriptTableInitialInsert(ScriptObject so, DataTable colInfoTable, DataTable mainTable, System.IO.StreamWriter w, string colList, string scolList, string PKcolListOn, int fileIndex, int totalFiles)
         {
             bool useIdentity = hasIdentity(colInfoTable);
 
